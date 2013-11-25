@@ -1,6 +1,6 @@
 import shlex
 import sys
-
+from string import Template
 
 # notes:
 '''
@@ -11,6 +11,9 @@ data:
 _heap db 256 dup (0)
 _hp db 0
 
+var organized form:
+	'VAR NAME':(TYPE,start_position)
+
 
 def malloc():
 	[heap+hp] = data
@@ -20,6 +23,9 @@ def malloc():
 the offset of the resource stores in a dict, the name of resource is the key.
 when we reference the resource, denotation of the resource will be replaced to heap[OFFSET] 
 
+
+Tips:
+1. key_for need rewrite (for arguments should call key_statement() instead of handling inside)
 
 '''
 
@@ -40,6 +46,7 @@ _segment_stack = '''
 dw 128 dup (0)
 '''
 _function_codes = ''
+_hp = 0 #increase 1 = 1 byte
 
 def gen_function_code(funcname,codes):
 	from string import Template
@@ -75,6 +82,9 @@ def add_func(text):
 def output():
 	global _segment_data,_segment_code,_segment_stack
 	print 'data segment'
+	print '\t_heap db 512 dup (0)'
+	print '\t_hp db 0'
+	print '\t_buffer db 128 dup (0)'
 	print '\t',
 	print _segment_data.replace('\n','\n\t')
 	print 'ends'
@@ -86,20 +96,20 @@ def output():
 
 	print 'code segment'
 	print """
-    start:
-    ; set segment registers:
-    mov ax, data
-    mov ds, ax
-    mov es, ax
+start:
+	; set segment registers:
+	mov ax, data
+	mov ds, ax
+	mov es, ax
 	"""
 	print _segment_code.replace('\n','\n\t')
 	print """
-    ; wait for any key....    
-    mov ah, 1
-    int 21h
-    
-    mov ax, 4c00h ; exit to operating system.
-    int 21h
+	; wait for any key....    
+	mov ah, 1
+	int 21h
+
+	mov ax, 4c00h ; exit to operating system.
+	int 21h
       
 	"""
 	#FUNCTION CODES SECTION
@@ -155,6 +165,11 @@ def _func_puts(lexer,param):
 # 
 @keyword_decorator(lex)
 def key_for(lexer,arg):
+	# tips:
+	# use _func_reference(keyword) to access heap 
+	#
+	#
+	#
 	'''
 	Pairs:
 	1. 	i=0 --> mov cx,0
@@ -417,15 +432,174 @@ def key_assembly(lexer,arg):
 		for i in foo:
 			add_code(i)
 
+def _get_type_bytes(tp):
+	digits = {'BYTE':1,
+			  'WORD':2,
+			  'DWORD':4}
+	return digits[tp]
+
 @keyword_decorator(lex)
 def key_malloc(lexer,arg):
-	global lexer_resource
-	pass
+	global lexer_resource,_hp
+
+	# get var name
+	var = lexer.get_token()
+	foo = lexer.get_token()
+	if foo != ';':
+		print 'MALLOC SYNTAX ERROR'
+		sys.exit(0)
+	# allocating
+	lexer_resource[var] = (arg[0],_hp)
+	_hp += _get_type_bytes(arg[0])
+
+	print '[MALLOC]',arg[0],var,lexer_resource[var]
+
+
+
 @keyword_decorator(lex)
 def key_free(lexer,arg):
 	# lazy free, just delete key from dict
 	global lexer_resource
 	pass
+
+@keyword_decorator(lex)
+def key_operator(lexer,arg):
+	global lexer_keywords,lexer_resource
+
+	# lazy free, just delete key from dict
+	opt = arg[0]
+	source = arg[1]
+
+	def _assign():
+		# Unary
+		# evaluate right value
+		# right value is read from buffer[0] ---->
+		reg_type = lexer_resource[source][0]
+		if reg_type == 'BYTE':
+			reg_type = 'dl'
+		else:
+			reg_type = 'dx'
+		key_statement(lexer)
+		# right value evaluated
+		pattern = '''
+;assign
+push bx
+push dx
+lea bx,_buffer
+mov $REG,[bx]
+lea bx,_heap
+mov [bx+$SOURCE],$REG
+pop dx
+pop bx
+;end assign
+		''' 
+		codes = Template(pattern).substitute({'REG':reg_type,'SOURCE':lexer_resource[source][1]})
+
+		add_code(codes)
+	def _plus():
+		# Binary
+		immediate_num = True
+		another = lexer.get_token()
+
+		try:
+			int(another)
+		except:
+			immediate_num = False
+
+		
+		# source + another
+		reg_type = lexer_resource[source][0]
+
+		if reg_type == 'BYTE':
+			reg_type = 'al'
+		else:
+			reg_type = 'ax'
+
+		if immediate_num == False:	
+			if lexer_resource[source][0] != lexer_resource[another][0]:
+				if _get_type_bytes(lexer_resource[source][0]) < _get_type_bytes(lexer_resource[another][0]):
+					reg_type = lexer_resource[another][0]
+
+			# DWORD is ignored for now ..
+			pattern = '''
+;add two number
+push bx
+push ax
+
+lea bx,_heap
+xor ax,ax
+;first number
+mov $REG,[bx+$FIRST]
+add $REG,[bx+$SECOND]
+lea bx,_buffer
+mov [bx],$REG
+pop ax
+pop bx
+;end add
+	'''
+			codes = Template(pattern).substitute({'REG':reg_type,'FIRST':lexer_resource[source][1],'SECOND':lexer_resource[another][1]})
+		else:
+			pattern = '''
+;add two number
+push bx
+push ax
+
+lea bx,_heap
+xor ax,ax
+;first number
+mov $REG,[bx+$FIRST]
+add $REG,$SECOND
+lea bx,_buffer
+mov [bx],$REG
+pop ax
+pop bx
+;end add
+	'''
+			codes = Template(pattern).substitute({'REG':reg_type,'FIRST':lexer_resource[source][1],'SECOND':another})
+
+		add_code(codes)
+
+
+	# ******************************
+
+	opt_method = {'=':_assign,
+				  '+':_plus}
+	try:
+		lexer_resource[source]
+	except:
+		print '[VARERROR] variant hasn\'t assigned.',source
+		sys.exit(9)
+
+	try:
+		lexer_keywords[opt]
+	except:
+		print '[operator] invalid',opt
+		sys.exit(9)
+
+	opt_method[opt]()
+	#START
+	'''
+	  '+':key_operator,
+	  '-':key_operator,
+	  '++':key_operator,
+	  '--':key_operator,
+	  '*':key_operator,
+	  '/':key_operator,
+	  '%':key_operator,
+	  '+=':key_operator,
+	  '-=':key_operator,
+	  '*=':key_operator,
+	  '/=':key_operator,
+	  '%=':key_operator,
+	  '>>':key_operator,
+	  '<<':key_operator,
+	  '<<=':key_operator,
+	  '>>=':key_operator
+	'''
+
+
+	
+
 
 def key_function_call(lexer,func):
 	bar = lexer.get_token()
@@ -455,6 +629,9 @@ def key_statement(lexer):
 	if statement == '}':
 		return '}'
 
+	if statement == ';':
+		# END
+		return None
 	
 	if statement in lexer_keywords.keys():
 		lexer_keywords[statement](statement) # call keyword function
@@ -462,11 +639,15 @@ def key_statement(lexer):
 		# not keyword, read until ';'
 		operator = lexer.get_token()
 
+		if operator == ';':
+			# END
+			return statement
+
 		#FUNCTION CALL	
 		if operator == '(':
 			key_function_call(lexer,statement)
-		elif operator == '+':
-			print '+'
+		else:
+			key_operator(operator,statement)
 			return None
 
 	return None
@@ -480,7 +661,24 @@ lexer_keywords = {'for':key_for,
 			      'assembly':key_assembly,
 			      'BYTE':key_malloc,
 			      'WORD':key_malloc,
-			      'DWORD':key_malloc}
+			      'DWORD':key_malloc,
+			      '=':key_operator,
+			      '+':key_operator,
+			      '-':key_operator,
+			      '++':key_operator,
+			      '--':key_operator,
+			      '*':key_operator,
+			      '/':key_operator,
+			      '%':key_operator,
+			      '+=':key_operator,
+			      '-=':key_operator,
+			      '*=':key_operator,
+			      '/=':key_operator,
+			      '%=':key_operator,
+			      '>>':key_operator,
+			      '<<':key_operator,
+			      '<<=':key_operator,
+			      '>>=':key_operator}
 
 
 while True:
