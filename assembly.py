@@ -1,6 +1,7 @@
 import shlex
 import sys
 from string import Template
+import re
 
 # notes:
 '''
@@ -8,8 +9,8 @@ FINAL MEMORY ADMINISTRATION: (NOT FINISHED)
 
 data: 
 
-_heap db 256 dup (0)
-_hp db 0
+_heap dw 256 dup (0)
+_hp dw 0
 
 var organized form:
 	'VAR NAME':(TYPE,start_position)
@@ -47,6 +48,7 @@ dw 128 dup (0)
 '''
 _function_codes = ''
 _hp = 0 #increase 1 = 1 byte
+_tmp = {'for_id':[]}
 
 def gen_function_code(funcname,codes):
 	from string import Template
@@ -77,14 +79,26 @@ def add_data(text):
 	_segment_data += text + '\n'
 	counter()
 
+def _push_for_id():
+	global _tmp
+	_tmp['for_id'].append(get_counter())
+
+def _pop_for_id():
+	global _tmp
+	return _tmp['for_id'].pop()
+
+def _get_for_id():
+	global _tmp
+	return _tmp['for_id'][-1]
+
 def add_func(text):
 	pass
 def output():
 	global _segment_data,_segment_code,_segment_stack
 	print 'data segment'
-	print '\t_heap db 512 dup (0)'
-	print '\t_hp db 0'
-	print '\t_buffer db 128 dup (0)'
+	print '\t_heap dw 512 dup (0)'
+	print '\t_hp dw 0'
+	print '\t_buffer dw 128 dup (0)'
 	print '\t',
 	print _segment_data.replace('\n','\n\t')
 	print 'ends'
@@ -223,188 +237,51 @@ def key_for(lexer,arg):
 		print 'ERROR'
 		sys.exit(0)
 	else:
-		params_list = ''
-		bar = lexer.get_token() #i OPT ?
-		while bar != ')':
-			params_list += bar			
-			bar = lexer.get_token()
+		iterator = lexer.get_token()
+		lexer.push_token(iterator)
+		_push_for_id()
 		
-		params_list = params_list.split(';')
 
-		#params_list only has 3 slices
-		para_1 = ''
-		para_2 = ''
-		para_3 = ''
-		# 1
-		'''
-		1. 	i=0 --> mov cx,0
-		i=X --> mov cx,X
-		'''
-		para_1 = params_list[0].replace('i=','')
-		initiating = '''
-	push cx
-	mov cx,%s
-LOOP_START_%s:
-''' % (get_counter(),para_1)
-
-		# 2
-		'''
-		2. 	i<=N --> cmp cx,N; jle LOOP_START
-		i<N --> cmp cx,N; jl LOOP_START
-		i>=N --> cmp cx,N; jge LOOP_START
-		i>N --> cmp cx,N; jg LOOP_START
-		i!=N --> cmp cx,N; jne LOOP_START
-		'''
 		
-		if '<=' in params_list[1]:
-			foobar = params_list[1].replace('i','').replace('<=','')
-			bound = """
-cmp cx,%s
-jle LOOP_START_%s
-			""" % (foobar,get_counter())
-		elif '>=' in params_list[1]:
-			foobar = params_list[1].replace('i','').replace('>=','')
-			bound = """
-cmp cx,%s
-jge LOOP_START_%s
-			""" % (foobar,get_counter())
-		elif '<' in params_list[1]:
-			foobar = params_list[1].replace('i','').replace('<','')
-			bound = """
-cmp cx,%s
-jl LOOP_START_%s
-			""" % (foobar,get_counter())
-		elif '>' in params_list[1]:
-			foobar = params_list[1].replace('i','').replace('>','')
-			bound = """
-cmp cx,%s
-jg LOOP_START_%s
-			""" % (foobar,get_counter())
-		elif '!' in params_list[1]:
-			foobar = params_list[1].replace('i','').replace('!','')
-			bound = """
-cmp cx,%s
-jne LOOP_START_%s
-			""" % (foobar,get_counter())
-
-
-
-		'''
-		3. 	i++ --> inc cx
-			i-- --> dec cx
-			i+=N --> add cx,N
-			i-=N --> sub cx,N
-			i*=N --> 
-					 push ax
-					 push dx
-					 mov ax,cx
-					 mov dl,N
-					 mul dl
-					 mov cx,ax
-					 pop dx
-					 pop ax
-
-			i/=N --> 
-					 push ax
-					 push dx
-					 mov ax,cx
-					 mov dl,N
-					 div dl
-					 xor ah,ah
-					 mov cx,ax
-					 pop dx
-					 pop ax
-			i%=N --> 
-					 push ax
-					 push dx
-					 mov ax,cx
-					 mov dl,N
-					 div dl
-					 mov al,ah
-					 xor ah,ah
-					 mov cx,ax
-					 pop dx
-					 pop ax
-			i<<=N --> 
-					 SHL cx,N
-			i>>N --> 
-					 SHR cx,N
-		'''
-		if '++' in params_list[2]:
-			iteration = 'inc cx'
-		elif '--' in params_list[2]:
-			iteration = 'dec cx'
-		elif '+=' in params_list[2]:
-			foobar = params_list[2].replace('i+=','')
-			iteration = '''add cx,%s''' % foobar
-		elif '-=' in params_list[2]:
-			foobar = params_list[2].replace('i-=','')
-			iteration = '''dec cx,%s''' % foobar
-		elif '*=' in params_list[2]:
-			foobar = params_list[2].replace('i*=','')
-			iteration = '''
-	push ax
-	push dx
-	mov ax,cx
-	mov dl,%s
-	mul dl
-	mov cx,ax
-	pop dx
-	pop ax
-			''' % foobar
-		elif '/=' in params_list[2]:
-			foobar = params_list[2].replace('i/=','')
-			iteration = '''
-	push ax
-	push dx
-	mov ax,cx
-	mov dl,%s
-	div dl
-	xor ah,ah
-	mov cx,ax
-	pop dx
-	pop ax
-			''' % foobar
-		elif '%=' in params_list[2]:
-			foobar = params_list[2].replace('i%=','')
-			iteration = '''
-	push ax
-	push dx
-	mov ax,cx
-	mov dl,%s
-	div dl
-	mov al,ah
-	xor ah,ah
-	mov cx,ax
-	pop dx
-	pop ax
-''' % foobar
-		elif '<<=' in params_list[2]:
-			foobar = params_list[2].replace('i<<=','')
-			iteration = '''shl cx,%s''' % foobar
-		elif '>>=' in params_list[2]:
-			foobar = params_list[2].replace('i>>=','')
-			iteration = '''shr cx,%s''' % foobar
-	
-
-	#gen. codes
-	add_code(initiating)
-
-	bar = lexer.get_token() # remove {
-	if bar != '{':
-		print 'ERROR'
-		sys.exit(0)
-	else:
-		# context
+		# handles dependent
+		arguments = '' 
 		while True:
-			ret = key_statement(lex)
-			if ret != None and ret != '':
+			foo = lexer.get_token()
+			if foo == ')':
 				break
-			pass
-		add_code(iteration)
-		
-		add_code(bound)
-	counter()
+			arguments += foo
+		arguments = arguments.split(';')
+
+		pattern = re.compile('([\+\-\=\>\<]?)')
+
+		opt_foo = ''.join(pattern.findall(arguments[0]))
+		dest = arguments[0].replace(iterator+opt_foo,'')
+		print (opt_foo,iterator,dest)
+		key_operator(opt_foo,iterator,dest)
+		add_code('LOOP_FOR_%s:' % _get_for_id())
+		while True:
+			foobar = key_statement(lexer)
+			if foobar == '}':
+				break
+
+		#bound check
+		opt_foo = ''.join(pattern.findall(arguments[2]))
+		dest = arguments[2].replace(iterator+opt_foo,'')
+		print (opt_foo,iterator,dest)
+		key_operator(opt_foo,iterator,dest)
+
+		# iterating
+		opt_foo = ''.join(pattern.findall(arguments[1]))
+		dest = arguments[1].replace(iterator+opt_foo,'')
+		print (opt_foo,iterator,dest)
+		key_operator(opt_foo,iterator,dest)
+
+
+
+		_pop_for_id()
+		#sys.exit(0)
+		# initiate iterator
+
 
 @keyword_decorator(lex)
 def key_assembly(lexer,arg):
@@ -465,11 +342,63 @@ def key_free(lexer,arg):
 @keyword_decorator(lex)
 def key_operator(lexer,arg):
 	global lexer_keywords,lexer_resource
-
 	# lazy free, just delete key from dict
+
 	opt = arg[0]
 	source = arg[1]
 
+
+	def _get_next():
+		if len(arg) == 3: #arg = (operator,source,dest)
+			return arg[2]
+		else:
+			return lexer.get_token()
+	# + or ++ / - or --
+	# < or <= / > or >=
+	# X or X= 
+	def _less():
+		immediate_num = True
+		#another = lexer.get_token()
+		another = _get_next()
+		try:
+			int(another)
+		except:
+			immediate_num = False
+		# source + another
+		reg_type = lexer_resource[source][0]
+
+		if reg_type == 'BYTE':
+			reg_type = 'al'
+		else:
+			reg_type = 'ax'
+
+		if immediate_num == False:	
+			if lexer_resource[source][0] != lexer_resource[another][0]:
+				if _get_type_bytes(lexer_resource[source][0]) < _get_type_bytes(lexer_resource[another][0]):
+					reg_type = lexer_resource[another][0]			
+			pattern = '''
+;_less $CMPER < $OPERATOR
+push ax
+mov ax,$CMPER
+cmp $REG,$CMPER
+jl $LABEL
+pop ax
+;less cmp end
+		'''
+			codes = Template(pattern).substitute({'CMPER':'[_heap+'+str(lexer_resource[source][1])+']' , 'REG':reg_type,'OPERATOR':another,'LABEL':'LOOP_FOR_%s' % _get_for_id()})
+		else:
+			pattern = '''
+;_less $REG < $OPERATOR
+push ax
+mov ax,$CMPER
+cmp $REG,$OPERATOR
+jl $LABEL
+pop ax
+;less cmp end
+		'''
+			codes = Template(pattern).substitute({'CMPER':'[_heap+'+str(lexer_resource[source][1])+']' , 'REG':reg_type,'OPERATOR':another,'LABEL':'LOOP_FOR_%s' % _get_for_id()})
+
+		add_code(codes)
 	def _assign():
 		# Unary
 		# evaluate right value
@@ -482,7 +411,7 @@ def key_operator(lexer,arg):
 		key_statement(lexer)
 		# right value evaluated
 		pattern = '''
-;assign
+;assign $VAR
 push bx
 push dx
 lea bx,_buffer
@@ -493,14 +422,14 @@ pop dx
 pop bx
 ;end assign
 		''' 
-		codes = Template(pattern).substitute({'REG':reg_type,'SOURCE':lexer_resource[source][1]})
+		codes = Template(pattern).substitute({'VAR':source,'REG':reg_type,'SOURCE':lexer_resource[source][1]})
 
 		add_code(codes)
 	def _plus():
 		# Binary
 		immediate_num = True
-		another = lexer.get_token()
-
+		#another = lexer.get_token()
+		another = _get_next()
 		try:
 			int(another)
 		except:
@@ -522,7 +451,7 @@ pop bx
 
 			# DWORD is ignored for now ..
 			pattern = '''
-;add two number
+;add two number ($VAR_1 + $VAR_2)
 push bx
 push ax
 
@@ -537,7 +466,7 @@ pop ax
 pop bx
 ;end add
 	'''
-			codes = Template(pattern).substitute({'REG':reg_type,'FIRST':lexer_resource[source][1],'SECOND':lexer_resource[another][1]})
+			codes = Template(pattern).substitute({'VAR_1':source,'VAR_2':another,'REG':reg_type,'FIRST':lexer_resource[source][1],'SECOND':lexer_resource[another][1]})
 		else:
 			pattern = '''
 ;add two number
@@ -559,11 +488,57 @@ pop bx
 
 		add_code(codes)
 
+	def _plusplus():
+		reg_type = lexer_resource[source][0]
+
+		if reg_type == 'BYTE':
+			op = 'inc %s' % '[_heap+'+str(lexer_resource[source][1]) + ']'
+		else:
+			op = 'add '  + '[_heap+'+ str(lexer_resource[source][1]) + ']' + ', 2'
+
+		codes = op
+
+		add_code(codes)
+
 
 	# ******************************
 
 	opt_method = {'=':_assign,
-				  '+':_plus}
+				  '+':_plus,
+				  '<':_less,
+				  '++':_plusplus}
+	
+	# OPT is certain 
+	if len(arg) != 3:
+		foo = lexer.get_token()
+		if opt+foo in opt_method:
+			bar = opt + foo
+			try:
+				opt_method[bar]
+				opt += foo
+
+				foo2 = lexer.get_token() # <<= >>= 
+				barbar = bar + foo2
+				try:
+					opt_method[barbar]
+					#3 chars
+					foo += foo2
+				except:
+					#not in opt_method
+					lexer.push_token(foo2)
+
+			except:
+				# not in opt_method
+				lexer.push_token(foo)
+				foo = ''
+				
+		else:
+			lexer.push_token(foo)
+	else:
+		opt = arg[0]
+
+	print 'opt',opt
+
 	try:
 		lexer_resource[source]
 	except:
@@ -616,7 +591,7 @@ def key_statement(lexer):
 	global lexer_keywords
 	#normal statement processing function
 	statement = lexer.get_token()
-
+	print 'statement',statement
 	if statement == '':
 		return None
 	if statement == 'main':
@@ -628,7 +603,10 @@ def key_statement(lexer):
 	# if statement = "}" ---> END
 	if statement == '}':
 		return '}'
-
+	if statement == ')':
+		return ')'
+	if statement == '{':
+		return '{'
 	if statement == ';':
 		# END
 		return None
@@ -638,7 +616,6 @@ def key_statement(lexer):
 	else:
 		# not keyword, read until ';'
 		operator = lexer.get_token()
-
 		if operator == ';':
 			# END
 			return statement
@@ -663,6 +640,10 @@ lexer_keywords = {'for':key_for,
 			      'WORD':key_malloc,
 			      'DWORD':key_malloc,
 			      '=':key_operator,
+			      '<':key_operator,
+			      '>':key_operator,
+			      '<=':key_operator,
+			      '>=':key_operator,
 			      '+':key_operator,
 			      '-':key_operator,
 			      '++':key_operator,
