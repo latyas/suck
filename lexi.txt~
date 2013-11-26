@@ -1,8 +1,13 @@
 main()
 {
-	BYTE k;
+	WORD k;
+	WORD i;
 	for(k=0;k<10;k++)
 	{
 		puts("hi");
+		for(i=0;i<10;i++)
+		{
+			puts("hi222");
+		}
 	}
 }

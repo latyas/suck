@@ -21,12 +21,18 @@ def malloc():
 	hp += len(data) -> calculated
 	return offset of _heap
 
-the offset of the resource stores in a dict, the name of resource is the key.
+the offset of the resource stores in a dict, the key is the name of resource.
 when we reference the resource, denotation of the resource will be replaced to heap[OFFSET] 
 
+CHANGES LOG:
+2013-11-26 deleted decorator from key_operator 
+2013-11-27 array achieved
 
 Tips:
 1. key_for need rewrite (for arguments should call key_statement() instead of handling inside)
+2. achieving evaluation of local statements 
+3. key_operator  if _heap in source -> do not find in resource dict
+4. dereference -> ([_heap+offset],length)
 
 '''
 
@@ -49,6 +55,22 @@ dw 128 dup (0)
 _function_codes = ''
 _hp = 0 #increase 1 = 1 byte
 _tmp = {'for_id':[]}
+_labels = []
+
+def local_statement_lexer(body):
+	local_lex = shlex.shlex(body)
+	local_lex.commenters = '//'
+	return local_lex
+def local_statement(body): #END with ;
+	print 'Local_statement_start'
+	_local_lexer = local_statement_lexer(body)
+	while True:
+		#foo = _local_lexer.get_token()
+		#print 'local:',foo
+		foo = key_statement(_local_lexer)
+		if foo == ';' or foo == None:
+			break
+	print 'Local_statement_end'
 
 def gen_function_code(funcname,codes):
 	from string import Template
@@ -91,14 +113,60 @@ def _get_for_id():
 	global _tmp
 	return _tmp['for_id'][-1]
 
+def _push_label(label):
+	global _labels
+	_labels.append(label)
+
+def _pop_label():
+	global _labels
+	return _labels.pop()
+
+def push(value,length):
+	add_code('''
+;push to user stack
+push bx
+mov bx,[_user_stack_ptr]
+mov [bx],%s
+add _user_stack_ptr,%s
+pop bx
+;push END
+		''' % (value,length) )
+
+def pop(dest,length):
+	pattern = '''
+;pop to dest
+push ax
+push bx
+mov bx,[_user_stack_ptr]
+mov $REG,[bx-$LENGTH]
+mov $DEST,$REG
+sub _user_stack_ptr,$LENGTH
+pop bx
+pop ax
+;pop END
+		'''
+
+	if length == 1:
+		reg = 'al'
+		prefix = 'BYTE PTR'
+	else:
+		prefix = 'WORD PTR'
+		reg = 'ax'
+
+
+	add_code(Template(pattern).substitute({'PREFIX':prefix,'REG':reg,'DEST':dest,'LENGTH':length}))
+
+
 def add_func(text):
 	pass
 def output():
 	global _segment_data,_segment_code,_segment_stack
 	print 'data segment'
-	print '\t_heap dw 512 dup (0)'
+	print '\t_heap dw 32768 dup (0)'
 	print '\t_hp dw 0'
-	print '\t_buffer dw 128 dup (0)'
+	print '\t_buffer dw 4096 dup (0)'
+	print '\t_user_stack dw 4096 dup (0)'
+	print '\t_user_stack_ptr dw 0'
 	print '\t',
 	print _segment_data.replace('\n','\n\t')
 	print 'ends'
@@ -115,6 +183,10 @@ start:
 	mov ax, data
 	mov ds, ax
 	mov es, ax
+
+	;initiate _hp , _user_stack_ptr
+	mov _hp,offset _heap
+	mov _user_stack_ptr,offset _user_stack
 	"""
 	print _segment_code.replace('\n','\n\t')
 	print """
@@ -250,35 +322,22 @@ def key_for(lexer,arg):
 			if foo == ')':
 				break
 			arguments += foo
+
+
 		arguments = arguments.split(';')
 
-		pattern = re.compile('([\+\-\=\>\<]?)')
-
-		opt_foo = ''.join(pattern.findall(arguments[0]))
-		dest = arguments[0].replace(iterator+opt_foo,'')
-		print (opt_foo,iterator,dest)
-		key_operator(opt_foo,iterator,dest)
+		local_statement(arguments[0] + ';') #initiate
 		add_code('LOOP_FOR_%s:' % _get_for_id())
 		while True:
 			foobar = key_statement(lexer)
 			if foobar == '}':
 				break
+		print 'WTF',arguments[2]+';'
+		local_statement(arguments[2]+ ';')
+		_push_label('LOOP_FOR_%s:' % _get_for_id())
+		local_statement(arguments[1]+ ';')	#jump	
 
-		#bound check
-		opt_foo = ''.join(pattern.findall(arguments[2]))
-		dest = arguments[2].replace(iterator+opt_foo,'')
-		print (opt_foo,iterator,dest)
-		key_operator(opt_foo,iterator,dest)
-
-		# iterating
-		opt_foo = ''.join(pattern.findall(arguments[1]))
-		dest = arguments[1].replace(iterator+opt_foo,'')
-		print (opt_foo,iterator,dest)
-		key_operator(opt_foo,iterator,dest)
-
-
-
-		_pop_for_id()
+		add_code('LOOP_FOR_%s_END:' % _pop_for_id())
 		#sys.exit(0)
 		# initiate iterator
 
@@ -315,21 +374,43 @@ def _get_type_bytes(tp):
 			  'DWORD':4}
 	return digits[tp]
 
-@keyword_decorator(lex)
-def key_malloc(lexer,arg):
+
+def key_malloc(lexer,*arg):
 	global lexer_resource,_hp
+	#TEST pointer and array
+
+	# if pointer ?
+	pointer = False
+	foo = lexer.get_token()
+	if foo == '*':
+		pointer = True
+	else:
+		lexer.push_token(foo)
 
 	# get var name
 	var = lexer.get_token()
 	foo = lexer.get_token()
+	# if array
+	if foo == '[':
+		array_size = int(lexer.get_token())
+		lexer_resource[var] = (arg[0],_hp,True)
+		_hp += _get_type_bytes(arg[0]) * array_size
+		lexer.get_token()
+		print '[MALLOC] ARRAY',arg[0],var,lexer_resource[var],array_size,_hp - _get_type_bytes(arg[0]) * array_size
+	else:		
+		lexer.push_token(foo)
+		lexer_resource[var] = (arg[0],_hp,pointer)
+		_hp += _get_type_bytes(arg[0])
+		print '[MALLOC] ',arg[0],var,lexer_resource[var]
+	foo = lexer.get_token()
 	if foo != ';':
-		print 'MALLOC SYNTAX ERROR'
+		print 'MALLOC SYNTAX ERROR',foo
 		sys.exit(0)
 	# allocating
-	lexer_resource[var] = (arg[0],_hp)
-	_hp += _get_type_bytes(arg[0])
+	# format of resource dict: (TYPE,HEAP_OFFSET,POINTER)
 
-	print '[MALLOC]',arg[0],var,lexer_resource[var]
+
+	
 
 
 
@@ -339,20 +420,37 @@ def key_free(lexer,arg):
 	global lexer_resource
 	pass
 
-@keyword_decorator(lex)
-def key_operator(lexer,arg):
+def key_operator(lexer,*arg):
 	global lexer_keywords,lexer_resource
 	# lazy free, just delete key from dict
-
+	print 'DEBUG',arg
 	opt = arg[0]
 	source = arg[1]
 
+	def _get_resource(target):
+		#returns (referencable obj,obj type)
+		if '[_heap' in target:
+			foo = target.split(',') # 0:pointer , 1.resource name
+			_type = lexer_resource[foo[1]][0]
+			return (foo[0],_type)
+		else:
+			ptr = '[_heap+' + str(lexer_resource[target][1])  + ']'
+			_type = lexer_resource[target][0]
+			return (ptr,_type)
 
 	def _get_next():
 		if len(arg) == 3: #arg = (operator,source,dest)
 			return arg[2]
 		else:
 			return lexer.get_token()
+
+	def _reference():
+		offset = lexer.get_token()
+		lexer.get_token() # remove ]
+		pointer = lexer_resource[source][1]
+		return '[_heap+%s]' % str(int(pointer)+int(offset)) +',%s' % source
+
+
 	# + or ++ / - or --
 	# < or <= / > or >=
 	# X or X= 
@@ -365,7 +463,7 @@ def key_operator(lexer,arg):
 		except:
 			immediate_num = False
 		# source + another
-		reg_type = lexer_resource[source][0]
+		reg_type = _get_resource(source)[1]
 
 		if reg_type == 'BYTE':
 			reg_type = 'al'
@@ -373,9 +471,9 @@ def key_operator(lexer,arg):
 			reg_type = 'ax'
 
 		if immediate_num == False:	
-			if lexer_resource[source][0] != lexer_resource[another][0]:
-				if _get_type_bytes(lexer_resource[source][0]) < _get_type_bytes(lexer_resource[another][0]):
-					reg_type = lexer_resource[another][0]			
+			if _get_resource(source)[1] != _get_resource(another)[1]:
+				if _get_type_bytes(_get_resource(source)[1]) < _get_type_bytes(_get_resource(another)[1]):
+					reg_type = _get_resource(another)[1]			
 			pattern = '''
 ;_less $CMPER < $OPERATOR
 push ax
@@ -385,7 +483,7 @@ jl $LABEL
 pop ax
 ;less cmp end
 		'''
-			codes = Template(pattern).substitute({'CMPER':'[_heap+'+str(lexer_resource[source][1])+']' , 'REG':reg_type,'OPERATOR':another,'LABEL':'LOOP_FOR_%s' % _get_for_id()})
+			codes = Template(pattern).substitute({'CMPER':_get_resource(source)[0] , 'REG':reg_type,'OPERATOR':another,'LABEL':_pop_label()})
 		else:
 			pattern = '''
 ;_less $REG < $OPERATOR
@@ -396,33 +494,31 @@ jl $LABEL
 pop ax
 ;less cmp end
 		'''
-			codes = Template(pattern).substitute({'CMPER':'[_heap+'+str(lexer_resource[source][1])+']' , 'REG':reg_type,'OPERATOR':another,'LABEL':'LOOP_FOR_%s' % _get_for_id()})
+			codes = Template(pattern).substitute({'CMPER':_get_resource(source)[0] , 'REG':reg_type,'OPERATOR':another,'LABEL':_pop_label()})
 
 		add_code(codes)
 	def _assign():
 		# Unary
 		# evaluate right value
 		# right value is read from buffer[0] ---->
-		reg_type = lexer_resource[source][0]
+		reg_type = _get_resource(source)[1]
 		if reg_type == 'BYTE':
 			reg_type = 'dl'
+			prefix = 'BYTE PTR'
 		else:
+			prefix = 'WORD PTR'
 			reg_type = 'dx'
+		print 'ASSIGN'
 		key_statement(lexer)
+		print 'ASSIGN - END'
+		pop('dx',2)
 		# right value evaluated
 		pattern = '''
 ;assign $VAR
-push bx
-push dx
-lea bx,_buffer
-mov $REG,[bx]
-lea bx,_heap
-mov [bx+$SOURCE],$REG
-pop dx
-pop bx
+mov $SOURCE,$REG
 ;end assign
 		''' 
-		codes = Template(pattern).substitute({'VAR':source,'REG':reg_type,'SOURCE':lexer_resource[source][1]})
+		codes = Template(pattern).substitute({'VAR':source,'REG':reg_type,'SOURCE':_get_resource(source)[0]})
 
 		add_code(codes)
 	def _plus():
@@ -445,9 +541,9 @@ pop bx
 			reg_type = 'ax'
 
 		if immediate_num == False:	
-			if lexer_resource[source][0] != lexer_resource[another][0]:
-				if _get_type_bytes(lexer_resource[source][0]) < _get_type_bytes(lexer_resource[another][0]):
-					reg_type = lexer_resource[another][0]
+			if _get_resource(source)[1] != _get_resource(another)[1]:
+				if _get_type_bytes(_get_resource(source)[1]) < _get_type_bytes(_get_resource(another)[1]):
+					reg_type = _get_resource(another)[1]	
 
 			# DWORD is ignored for now ..
 			pattern = '''
@@ -458,15 +554,15 @@ push ax
 lea bx,_heap
 xor ax,ax
 ;first number
-mov $REG,[bx+$FIRST]
-add $REG,[bx+$SECOND]
+mov $REG,$FIRST
+add $REG,$SECOND
 lea bx,_buffer
 mov [bx],$REG
 pop ax
 pop bx
 ;end add
 	'''
-			codes = Template(pattern).substitute({'VAR_1':source,'VAR_2':another,'REG':reg_type,'FIRST':lexer_resource[source][1],'SECOND':lexer_resource[another][1]})
+			codes = Template(pattern).substitute({'VAR_1':source,'VAR_2':another,'REG':reg_type,'FIRST':_get_resource(source)[0],'SECOND':_get_resource(another)[0]})
 		else:
 			pattern = '''
 ;add two number
@@ -476,7 +572,7 @@ push ax
 lea bx,_heap
 xor ax,ax
 ;first number
-mov $REG,[bx+$FIRST]
+mov $REG,$FIRST
 add $REG,$SECOND
 lea bx,_buffer
 mov [bx],$REG
@@ -484,17 +580,22 @@ pop ax
 pop bx
 ;end add
 	'''
-			codes = Template(pattern).substitute({'REG':reg_type,'FIRST':lexer_resource[source][1],'SECOND':another})
+			codes = Template(pattern).substitute({'REG':reg_type,'FIRST':_get_resource(source)[0],'SECOND':another})
 
 		add_code(codes)
 
 	def _plusplus():
-		reg_type = lexer_resource[source][0]
+		reg_type = _get_resource(source)[1]
+		ptr = lexer_resource[source][2]
 
-		if reg_type == 'BYTE':
-			op = 'inc %s' % '[_heap+'+str(lexer_resource[source][1]) + ']'
+
+		if ptr:
+			if reg_type == 'BYTE':
+				op = 'inc %s' % str(_get_resource(source)[0])
+			else:
+				op = 'add '  + str(_get_resource(source)[0]) + ', 2'
 		else:
-			op = 'add '  + '[_heap+'+ str(lexer_resource[source][1]) + ']' + ', 2'
+			op = 'inc %s' % str(_get_resource(source)[0])
 
 		codes = op
 
@@ -506,7 +607,8 @@ pop bx
 	opt_method = {'=':_assign,
 				  '+':_plus,
 				  '<':_less,
-				  '++':_plusplus}
+				  '++':_plusplus,
+				  '[':_reference}
 	
 	# OPT is certain 
 	if len(arg) != 3:
@@ -539,11 +641,12 @@ pop bx
 
 	print 'opt',opt
 
-	try:
-		lexer_resource[source]
-	except:
-		print '[VARERROR] variant hasn\'t assigned.',source
-		sys.exit(9)
+	if '[_heap' not in source:
+		try:
+			lexer_resource[source]
+		except:
+			print '[VARERROR] variant hasn\'t assigned.',source
+			sys.exit(9)
 
 	try:
 		lexer_keywords[opt]
@@ -551,7 +654,7 @@ pop bx
 		print '[operator] invalid',opt
 		sys.exit(9)
 
-	opt_method[opt]()
+	return opt_method[opt]()
 	#START
 	'''
 	  '+':key_operator,
@@ -587,10 +690,15 @@ def key_function_call(lexer,func):
 	lexer_function[func](params,func)
 
 
-def key_statement(lexer):
+def key_statement(lexer,*arg):
 	global lexer_keywords
 	#normal statement processing function
-	statement = lexer.get_token()
+	if len(arg) == 0:
+		statement = lexer.get_token()
+	else:
+		statement = arg[0]
+
+
 	print 'statement',statement
 	if statement == '':
 		return None
@@ -612,19 +720,23 @@ def key_statement(lexer):
 		return None
 	
 	if statement in lexer_keywords.keys():
-		lexer_keywords[statement](statement) # call keyword function
+		lexer_keywords[statement](lexer,statement) # call keyword function
 	else:
 		# not keyword, read until ';'
 		operator = lexer.get_token()
-		if operator == ';':
+		if operator == ';': # immediate number
 			# END
+			push(statement,2)
 			return statement
 
 		#FUNCTION CALL	
 		if operator == '(':
 			key_function_call(lexer,statement)
 		else:
-			key_operator(operator,statement)
+			ret = key_operator(lexer,operator,statement)
+			if ret != None:
+				print 'HAS RET:',ret
+				key_statement(lexer,ret)
 			return None
 
 	return None
@@ -640,6 +752,7 @@ lexer_keywords = {'for':key_for,
 			      'WORD':key_malloc,
 			      'DWORD':key_malloc,
 			      '=':key_operator,
+			      '[':key_operator,
 			      '<':key_operator,
 			      '>':key_operator,
 			      '<=':key_operator,
@@ -669,7 +782,7 @@ while True:
 
 
 output()
-
+print lexer_resource
 '''
 for token in lexer:
     print token
