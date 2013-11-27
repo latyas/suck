@@ -1,12 +1,18 @@
 main()
 {
-	WORD k;
 	WORD i;
 	WORD sex[100];
+	WORD* ptr;
 
-	sex[5] = 1;
+	i = 2;
+	sex[5] = 3;
+	ptr = sex;
 	
-	for(k=0;k<10;k++)
+	i = sex[5] + 1;
+	
+	
+	
+	for(WORD k=0;k<10;k++)
 	{
 		puts("Hello, SHIYANKELAOSHI.");
 	}

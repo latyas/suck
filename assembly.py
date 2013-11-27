@@ -125,14 +125,16 @@ def push(value,length):
 	global lexer_resource
 	pattern = '''
 ;push to user stack
-;body:%s
 push bx
+push dx
 mov bx,[_user_stack_ptr]
-mov [bx],$SOURCE
+mov dx,$SOURCE
+mov [bx],dx
 add _user_stack_ptr,$LENGTH
+pop dx
 pop bx
 ;push END
-		''' % str(value)
+		'''
 
 	if '[_heap' in value:
 		source = value
@@ -144,7 +146,7 @@ pop bx
 			source = '[_heap+' + str(lexer_resource[value][1]) + ']' 
 	codes = Template(pattern).substitute({'SOURCE':source,'LENGTH':length})
 	add_code(codes)
-
+	
 def pop(dest,length):
 	pattern = '''
 ;pop to dest
@@ -343,8 +345,7 @@ def key_for(lexer,arg):
 		token = arguments[0].split(' ')[0]
 		if token in lexer_keywords:
 			new_codes = token + ' ' + arguments[0].split(' ')[1] + ';'
-			local_statement(new_codes)
-			new_codes = arguments[0].replace(token + ' ','') + ';'
+			new_codes += arguments[0].replace(token + ' ','')
 			local_statement(new_codes)
 		else:
 			local_statement(arguments[0] + ';') #initiate
@@ -554,7 +555,7 @@ mov $SOURCE,$REG
 
 		
 		# source + another
-		reg_type = lexer_resource[source][0]
+		reg_type = _get_resource(source)[1]
 
 		if reg_type == 'BYTE':
 			reg_type = 'al'
@@ -747,7 +748,6 @@ def key_statement(lexer,*arg):
 		operator = lexer.get_token()
 		if operator == ';': # immediate number
 			# END
-			print 'PUSH IMMEDIATE NUMBER TO USER STACK'
 			push(statement,2)
 			return statement
 
