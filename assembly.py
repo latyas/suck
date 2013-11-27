@@ -122,15 +122,28 @@ def _pop_label():
 	return _labels.pop()
 
 def push(value,length):
-	add_code('''
+	global lexer_resource
+	pattern = '''
 ;push to user stack
+;body:%s
 push bx
 mov bx,[_user_stack_ptr]
-mov [bx],%s
-add _user_stack_ptr,%s
+mov [bx],$SOURCE
+add _user_stack_ptr,$LENGTH
 pop bx
 ;push END
-		''' % (value,length) )
+		''' % str(value)
+
+	if '[_heap' in value:
+		source = value
+	else:
+		try:
+			int(value)
+			source = value
+		except:
+			source = '[_heap+' + str(lexer_resource[value][1]) + ']' 
+	codes = Template(pattern).substitute({'SOURCE':source,'LENGTH':length})
+	add_code(codes)
 
 def pop(dest,length):
 	pattern = '''
@@ -321,12 +334,20 @@ def key_for(lexer,arg):
 			foo = lexer.get_token()
 			if foo == ')':
 				break
-			arguments += foo
+			arguments += foo + ' '
 
 
 		arguments = arguments.split(';')
 
-		local_statement(arguments[0] + ';') #initiate
+		# if define a iterator in for 
+		token = arguments[0].split(' ')[0]
+		if token in lexer_keywords:
+			new_codes = token + ' ' + arguments[0].split(' ')[1] + ';'
+			local_statement(new_codes)
+			new_codes = arguments[0].replace(token + ' ','') + ';'
+			local_statement(new_codes)
+		else:
+			local_statement(arguments[0] + ';') #initiate
 		add_code('LOOP_FOR_%s:' % _get_for_id())
 		while True:
 			foobar = key_statement(lexer)
@@ -726,6 +747,7 @@ def key_statement(lexer,*arg):
 		operator = lexer.get_token()
 		if operator == ';': # immediate number
 			# END
+			print 'PUSH IMMEDIATE NUMBER TO USER STACK'
 			push(statement,2)
 			return statement
 
